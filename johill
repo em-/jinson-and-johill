@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+
+"""Mangle the JSON data from JIRA to something Phabricator's Phill may like.
+
+Usage:
+  johill <jira.json> [--base-url=url]
+
+Options:
+  --base-url=url  The default base URL for projects and tasks
+  -h --help       Show this screen.
+  --version       Show version.
+
+"""
+
+from docopt import docopt
+from datetime import datetime
+from itertools import chain
+import json
+import sys
+import re
+
+class Converter:
+    def __init__(self):
+        self.bytype = {}
+        self.projects = []
+        self.tasks = []
+        self.base_url = 'https://jira.example.org/browse'
+
+    def set_base_url(self, url):
+        self.base_url = url
+
+    def url(self, i):
+        url = i.get('url') or (self.base_url.rstrip('/') + '/'  + i['key'])
+        return url
+
+    def load(self, fd):
+        self.bytype = json.load(fd)
+
+    def convert(self):
+        self.projects_convert()
+        self.issues_convert()
+        r = {
+            'projects': self.projects,
+            'tasks': self.tasks
+        }
+        return r
+
+    def date_to_iso(self, datestr):
+        iso = datetime.strptime(datestr, '%Y-%m-%d %H:%M:%S.%f').isoformat()
+        return iso
+
+    def user_email(self, key):
+        return self.bytype['users'][key]['emailAddress']
+
+    def markup_parse(self, markup):
+        if not markup:
+            return None
+        # turn [text|link] to [[link|text]]
+        markup = re.sub(r'\[(.*)\|(.*)\]', r'[[\2|\1]]', markup)
+        # turn {{code}} to ##code##
+        markup = re.sub(r'{{(.*?)}}', r'##\1##', markup)
+        markup = markup.replace('{code}', '```')
+        return markup
+
+    def projects_convert(self):
+        for p in self.bytype['Project'].values():
+            self.project_convert(p)
+
+    def project_convert(self, p):
+        ret = {
+            'id': p['key'],
+            'name': p['name'],
+            'description': self.markup_parse(p.get('description')),
+            'tracker': 'JIRA',
+            'url': self.url(p),
+            'creator': self.user_email(p['lead']),
+            'creationDate': datetime.now().isoformat(),
+        }
+
+        # take the creation date and author from the first issue
+        for i in self.bytype['Issue'].values():
+            if i['project'] != p['id']: continue
+            date = self.date_to_iso(i['created'])
+            if date < ret.get('creationDate', datetime.max.isoformat()):
+                ret['creationDate'] = date
+                ret['creator'] = self.user_email(i['creator'])
+
+        members = []
+        for actor in chain(*p['roles'].values()):
+            if actor['roletype'] != 'atlassian-user-role-actor': continue
+            members.append(self.user_email(actor['roletypeparameter']))
+        ret['members'] = list(set(members))
+        self.projects.append(ret)
+
+    def transaction_create(self, actor, date, kind, value=None, comment=None):
+        ret = {
+            'actor': actor,
+            'date': date,
+            'type': kind,
+        }
+        if value:
+            ret['value'] = value
+        if comment:
+            ret['comment'] = comment
+        return ret;
+
+    def issues_convert(self):
+        for i in self.bytype['Issue'].values():
+            self.issue_convert(i)
+
+    def transactions_parse_action(self, i, a):
+        transactions = []
+        if a['type'] == 'comment':
+            comment = self.markup_parse(a['body'])
+            txn = self.transaction_create(self.user_email(a['author']), a['created'], 'comment', comment=comment)
+            transactions.append(txn)
+        return transactions
+
+    def priority_parse(self, status):
+        m = {
+            "Blocker":  100,
+            "Critical":  80,
+            "Major":     50,
+            "Minor":     25,
+            "Trivial":    0,
+        }
+        return m.get(status)
+
+
+    def status_parse(self, status):
+        m = {
+            "Open": "open",
+            "Reopened": "open",
+            "In Progress": "wip",
+            "Fixed": "resolved",
+            "Done": "resolved",
+            "Incomplete": "rejected",
+            "Cannot Reproduce": "rejected",
+            "Won't Fix": "rejected",
+            "Duplicate": "duplicate",
+        }
+        return m.get(status)
+
+    def status_resolution_fold(self, status, resolution):
+        return None
+
+    def transactions_preprocess_change(self, c):
+        resolution = next((i for i in c['items'] if i['field'] == 'resolution'), None)
+        status     = next((i for i in c['items'] if i['field'] == 'status'), None)
+
+        if resolution:
+            if not status:
+                # treat resolution changes as status changes
+                resolution['field'] = 'status'
+            elif 'newstring' in resolution:
+                # take the resolution value as the status value
+                status['newstring'] = resolution['newstring']
+
+    def transactions_parse_change(self, i, c):
+        self.transactions_preprocess_change(c)
+        transactions = []
+        for item in c['items']:
+            value = item.get('newstring')
+            kind = item['field'].lower()
+            if kind == 'assignee':
+                kind = 'owner'
+                value = self.user_email(item['newvalue'])
+            elif kind == 'summary':
+                kind = 'title'
+            elif kind == 'attachment':
+                if 'newvalue' not in item: continue # ignore attachments being dropped
+                if 'attachments' not in i or item['newvalue'] not in i['attachments']: continue # ignore missing attachments
+                a = i['attachments'][item['newvalue']]
+                value = {
+                    'author': self.user_email(a['author']),
+                    'data': a['data'],
+                    'name': a['filename'],
+                    'mimetype': a['mimetype'],
+                }
+            elif kind == 'status':
+                value = self.status_parse(value)
+                if not value: continue
+            elif kind == 'priority':
+                value = self.priority_parse(value)
+            elif kind == 'description':
+                value = self.markup_parse(value)
+            else:
+                continue
+
+            txn = self.transaction_create(self.user_email(c['author']), c['created'], kind, value)
+            transactions.append(txn)
+        return transactions
+
+    def issue_convert(self, i):
+        reporter = self.user_email(i['reporter'])
+        date = self.date_to_iso(i['created'])
+        project = self.bytype['Project'][i['project']]['key']
+        ret = {
+            'id': i['key'],
+            'url': self.url(i),
+            'title': i['summary'],
+            'creationDate': date,
+            'creator': reporter,
+            'description': self.markup_parse(i.get('description')),
+            'transactions': [
+                self.transaction_create(reporter, date, 'projects', { '=': [project] })
+            ]
+        }
+        actions = [self.transactions_parse_action(i, a) for a in i.get('actions', [])]
+        changes = [self.transactions_parse_change(i, c) for c in i.get('changes', [])]
+        ret['transactions'] += sorted(chain(*(actions + changes)), key=lambda t: t['date'])
+        self.tasks.append(ret)
+
+def main(arguments):
+    fd = sys.stdin
+    if arguments['<jira.json>'] != '-':
+        fd = file(arguments['<jira.json>'])
+    converter = Converter()
+    if '--base-url' in arguments:
+        converter.set_base_url(arguments['--base-url'])
+    converter.load(fd)
+    data = converter.convert()
+    print(json.dumps(data, sort_keys=True, indent=4))
+
+if __name__ == '__main__':
+    arguments = docopt(__doc__, version='Johill 0.1')
+    main(arguments)

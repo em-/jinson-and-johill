@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+
+"""Jinson - Convert JIRA's XML to JSON
+
+Usage:
+  jinson <entities.xml>
+
+Options:
+  -h --help     Show this screen.
+  --version     Show version.
+"""
+
+from docopt import docopt
+from datetime import datetime
+import json
+import xml.etree.ElementTree as ET
+
+
+class Converter:
+    def __init__(self):
+        self.bytype = {}
+
+    def load(self, tree):
+        def elementdict(el):
+            d = dict(el.attrib)
+            for child in el:
+                if not child.attrib and not len(child):
+                    if child.text.strip():
+                        d[child.tag] = child.text.strip()
+                else:
+                    d[child.tag] = elementdict(child)
+            return d
+
+        root = tree.getroot()
+        for child in root:
+            if 'id' in child.attrib:
+                self.bytype.setdefault(child.tag, {})[child.attrib['id']] = elementdict(child)
+            else:
+                self.bytype.setdefault(child.tag, []).append(elementdict(child))
+
+    def convert(self):
+        r = self.bytype
+
+        def nest(data, child, key, parent, prop, dictkey=None):
+            for i, item in sorted(data[child].items()):
+                dest = data[parent][item[key]]
+                if dictkey:
+                    dest.setdefault(prop, {})[item[dictkey]] = item
+                else:
+                    dest.setdefault(prop, []).append(item)
+                del item[key]
+            del data[child]
+
+        nest(r, 'Membership', 'childId', 'User', 'membership')
+        nest(r, 'ChangeItem', 'group', 'ChangeGroup', 'items')
+        nest(r, 'ChangeGroup', 'issue', 'Issue', 'changes')
+        nest(r, 'Action', 'issue', 'Issue', 'actions')
+        nest(r, 'Worklog', 'issue', 'Issue', 'worklog')
+        nest(r, 'FileAttachment', 'issue', 'Issue', 'attachments', 'id')
+        nest(r, 'AuditChangedValue', 'logId', 'AuditLog', 'changes')
+        nest(r, 'AuditItem', 'logId', 'AuditLog', 'items')
+
+        # generated the path pointing to the attachment data saved in the zip file
+        for i in r['Issue'].values():
+            p = r['Project'][i['project']]
+            for a in i.get('attachments', {}).values():
+                a['data'] = '/'.join(('data/attachments', p['key'], i['key'], a['id']))
+
+        # store users in a dict keyed by ApplicationUser.userKey
+        users = { u['lowerUserName']: u for u in r['User'].values() }
+        for appuser in r['ApplicationUser'].values():
+            u = users.get(appuser['lowerUserName'])
+            r.setdefault('users', {})[appuser['userKey']] = u
+        del r['ApplicationUser']
+        del r['User']
+
+        for g in r['Group'].values():
+            r.setdefault('groups', {})[g['lowerGroupName']] = g
+        del r['Group']
+
+        # store actors in the appropriate projects, keyed by role type
+        for i, role in list(sorted(r['ProjectRoleActor'].items())):
+            if 'pid' in role:
+                r['Project'][role['pid']].setdefault('roles', {}).setdefault(role['projectroleid'], []).append(role)
+                del role['pid']
+                del role['projectroleid']
+                del r['ProjectRoleActor'][i]
+
+        return r
+
+def main(arguments):
+    tree = ET.parse(arguments['<entities.xml>'])
+    converter = Converter()
+    converter.load(tree)
+    data = converter.convert()
+    print(json.dumps(data, sort_keys=True, indent=4))
+
+if __name__ == '__main__':
+    arguments = docopt(__doc__, version='Jinson 0.1')
+    main(arguments)
