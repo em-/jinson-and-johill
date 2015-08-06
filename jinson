@@ -13,6 +13,7 @@ Options:
 from docopt import docopt
 from datetime import datetime
 import json
+import sys
 import xml.etree.ElementTree as ET
 
 
@@ -89,7 +90,10 @@ class Converter:
         return r
 
 def main(arguments):
-    tree = ET.parse(arguments['<entities.xml>'])
+    data = arguments['<entities.xml>']
+    if data == '-':
+        data = sys.stdin
+    tree = ET.parse(data)
     converter = Converter()
     converter.load(tree)
     data = converter.convert()
