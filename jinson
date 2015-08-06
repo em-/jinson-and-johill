@@ -43,6 +43,8 @@ class Converter:
         r = self.bytype
 
         def nest(data, child, key, parent, prop, dictkey=None):
+            if child not in data:
+                return
             for i, item in sorted(data[child].items()):
                 dest = data[parent][item[key]]
                 if dictkey:
