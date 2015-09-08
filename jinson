@@ -67,7 +67,8 @@ class Converter:
         for i in r['Issue'].values():
             p = r['Project'][i['project']]
             for a in i.get('attachments', {}).values():
-                a['data'] = '/'.join(('data/attachments', p['key'], i['key'], a['id']))
+                unknown_thing = '10000'
+                a['data'] = '/'.join(('data/attachments', p['key'], unknown_thing, i['key'], a['id']))
 
         # store users in a dict keyed by ApplicationUser.userKey
         users = { u['lowerUserName']: u for u in r['User'].values() }
