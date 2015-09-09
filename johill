@@ -184,6 +184,20 @@ class Converter:
                 value = self.priority_parse(value)
             elif kind == 'description':
                 value = self.markup_parse(value)
+            elif kind == 'epic child':
+                kind = 'depends'
+                value = {}
+                if 'newstring' in item:
+                    value['+'] = [ item['newstring'] ]
+                if 'oldstring' in item:
+                    value['-'] = [ item['oldstring'] ]
+            elif kind == 'link' and ('is blocked by' in item.get('newstring', '') or 'is blocked by' in item.get('oldstring', '')):
+                kind = 'depends'
+                value = {}
+                if 'newvalue' in item:
+                    value['+'] = [ item['newvalue'] ]
+                if 'oldvalue' in item:
+                    value['-'] = [ item['oldvalue'] ]
             else:
                 continue
 
