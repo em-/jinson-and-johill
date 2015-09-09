@@ -215,7 +215,7 @@ class Converter:
 def main(arguments):
     fd = sys.stdin
     if arguments['<jira.json>'] != '-':
-        fd = file(arguments['<jira.json>'])
+        fd = open(arguments['<jira.json>'])
     converter = Converter()
     if '--base-url' in arguments:
         converter.set_base_url(arguments['--base-url'])
