@@ -202,6 +202,7 @@ class Converter:
             'creationDate': date,
             'creator': reporter,
             'description': self.markup_parse(i.get('description')),
+            'assignee': self.user_email(i['assignee']),
             'transactions': [
                 self.transaction_create(reporter, date, 'projects', { '=': [project] })
             ]
