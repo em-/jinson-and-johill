@@ -221,6 +221,26 @@ class Converter:
                 self.transaction_create(reporter, date, 'projects', { '=': [project] })
             ]
         }
+
+        # handle attachments added on issue creation for which no explict transaction exist
+        explict_attach = set(change['items'][0]['id'] for change in i.get('changes', []) if change['items'][0]['field'].lower() == 'attachment')
+
+        implicit_attachments = (a for a in i.get('attachments', {}).values() if a['id'] not in explict_attach)
+        for attachment in implicit_attachments:
+            change = {
+                'author': i['creator'],
+                'created': i['created'],
+                'items': [
+                    {
+                        'field': 'Attachment',
+                        'fieldtype': 'jira',
+                        'newstring': attachment['filename'],
+                        'newvalue': attachment['id']
+                    }
+                ]
+            }
+            i.setdefault('changes', []).insert(0, change)
+
         actions = [self.transactions_parse_action(i, a) for a in i.get('actions', [])]
         changes = [self.transactions_parse_change(i, c) for c in i.get('changes', [])]
         ret['transactions'] += sorted(chain(*(actions + changes)), key=lambda t: t['date'])
