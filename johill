@@ -52,6 +52,28 @@ class Converter:
     def user_email(self, key):
         return self.bytype['users'][key]['emailAddress']
 
+    def markup_parse_quoted_blocks(self, markup):
+        quoting = False
+        for line in markup.split('\n'):
+            if (line.strip() + " ").startswith('bq. '):
+                quoting = True
+            if not line.strip():
+                quoting = False
+            if quoting:
+                line = '> ' + line
+            yield line
+
+    def markup_parse_quoted_sections(self, markup):
+        quoting = False
+        for line in markup.split('\n'):
+            if line.strip() == '{quote}':
+                quoting = not quoting
+                yield ''
+                continue
+            if quoting:
+                line = '> ' + line
+            yield line
+
     def markup_parse(self, markup):
         if not markup:
             return None
@@ -60,6 +82,9 @@ class Converter:
         # turn {{code}} to ##code##
         markup = re.sub(r'{{(.*?)}}', r'##\1##', markup)
         markup = markup.replace('{code}', '```')
+        # turn {quote}-delimited sections and 'bq.' blocks to '>'-prefixed ones
+        markup = '\n'.join(self.markup_parse_quoted_blocks(markup))
+        markup = '\n'.join(self.markup_parse_quoted_sections(markup))
         return markup
 
     def projects_convert(self):
